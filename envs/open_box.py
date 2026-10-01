@@ -10,11 +10,9 @@ from scipy.spatial.transform import Rotation as R
 class OpenBoxRobotEnv(gym.Env):
     """
     Online gym environment wrapping the real UR robot via RTDE.
-    Observations : 19-dim  (e.g. TCP pose 6 + F/T wrench 6)
+    Observations : 19-dim  (e.g. TCP pos 6 + F/T wrench 6 + accumualte contact force 1 + last action 6)
     Actions      : 6-dim   (delta-pose in original scale, clipped)
     """
-
-    metadata = {"render_modes": []}
     # # ── Task config ───────────────────────────────────────
     # # ── action bounds found in in the demo ───────────────────────────────────────
     # ACTION_MIN = np.array([-0.000553*1.5, -0.000271, -0.000161*2, -0.000511, -0.000492*2, -0.000863], dtype=np.float32)
@@ -29,7 +27,7 @@ class OpenBoxRobotEnv(gym.Env):
     MOVE_ACCEL    = 0.3        # [m/s²]
     
 
-    def __init__(self, rtde_c, rtde_r, home_pose: np.array, max_steps: int = 150, verbose: bool = False, offline_mode = True, device = 'cpu'):
+    def __init__(self, rtde_c, rtde_r, home_pose: np.array, max_steps: int = 150, verbose: bool = False, offline_mode = True, device = 'cpu', demo_file=None):
         super().__init__()
         self.rtde_c   = rtde_c
         self.rtde_r   = rtde_r
@@ -75,15 +73,17 @@ class OpenBoxRobotEnv(gym.Env):
             high= np.ones(6, dtype=np.float32),
         )
 
-        df = pd.read_csv("demos/snapfit0/one_demo.csv")
+        # Recorded observations are only needed in replay-observation mode.
+        if self._offline_mode:
+            from task_settings import TASKS
 
-        # ── Extract observations (12 dims) and actions (6 dims) ───────────────────────
-        obs_cols    = [f"observations.{i}" for i in range(19)]
-        action_cols = [f"actions.{i}" for i in range(6)]
+            demo_path = demo_file if demo_file is not None else TASKS["openbox"].demo_file
+            if demo_path is None:
+                raise ValueError("No recorded observations configured; provide demo_file")
+            df = pd.read_csv(demo_path)
+            obs_cols = [f"observations.{i}" for i in range(19)]
+            self._observations = df[obs_cols].values.astype(np.float32)
 
-        self._observations = df[obs_cols].values.astype(np.float32)    # (5000, 12)
-        actions      = df[action_cols].values.astype(np.float32) # (5000, 6)
- 
     # ── helpers ───────────────────────────────────────────────────────────────
     def _denorm(self, action_norm: np.ndarray) -> np.ndarray:
         """Map [-1,1] → original delta-pose space."""
@@ -102,7 +102,7 @@ class OpenBoxRobotEnv(gym.Env):
         if self._offline_mode:
             # offline setting
             # Load the gooddemo file
-            obs = self._observations[self._steps+500*0,:]
+            return self._observations[self._steps].copy()
         else:
             ## online setting
             curr_Force = self.rtde_r.getActualTCPForce()
@@ -159,20 +159,10 @@ class OpenBoxRobotEnv(gym.Env):
         self._accmu_force_x += curr_Force[0]
         
         dist = np.clip(self.target_z - curr_TCP[2], 0.0, self.height)
-        # reward = 1 * (1 - dist/self.height) 
-        print("TCP distance to z target:", dist)
-
-        print("self._accmu_force_x ", self._accmu_force_x)
-        # print("force_mag", force_mag)
-        print("curr_Force[0]", curr_Force[0])
-        # print("curr_Force[1]", curr_Force[1])
-        print("curr_Force[2]", curr_Force[2])
 
         # open box reward
         if self._accmu_force_x > 100 and self._accmu_force_x < 10000 and curr_Force[0] > 3. and dist < self.height-0.002: # snapfit0
             reward = (1 - dist/self.height)  #  distance bonus
-        # elif self.force_limit_reach:
-        #     reward = -1.  # safety violation
         else:
             reward = 0.
 
@@ -190,9 +180,6 @@ class OpenBoxRobotEnv(gym.Env):
         print("force_limit_reach", self.force_limit_reach)
         e_stop    = force_mag > self.FORCE_LIMIT or curr_TCP[2] > self.target_z + 0.05
         return timeout or e_stop or self.force_limit_reach
-    
-    # def _admittance_ctr(self, obs: np.ndarray, action: np.ndarray) -> float:
-    #     f
 
     # ── gym API ───────────────────────────────────────────────────────────────
     def reset(self, *, seed=None, options=None):
@@ -228,22 +215,7 @@ class OpenBoxRobotEnv(gym.Env):
         self._prev_obs = obs.copy()
         return obs, {}
 
-
-    # ── Evaluation ───────────────────────────────────────────────────────────
-    def _go_home(self) -> None:
-        """Move robot back to home pose and re-zero the F/T sensor."""
-        # self.rtde_c.servoStop()
-        print("before")
-        self.rtde_c.speedStop()
-        time.sleep(0.3)
-        self.rtde_c.moveL(self.home.tolist(), speed=self.MOVE_SPEED, acceleration=self.MOVE_ACCEL)
-        print("after")
-        time.sleep(0.3)
-        self.rtde_c.zeroFtSensor()
-        time.sleep(0.1)
-
     def command_in_tcp_frame(self, mouse_input):
-
         # Get current TCP pose
         tcp_pose = self.rtde_r.getActualTCPPose()
         current_forces = self.rtde_r.getActualTCPForce()
@@ -255,7 +227,6 @@ class OpenBoxRobotEnv(gym.Env):
 
         # command = [-1*mouse_input[1]*st, mouse_input[0]*st, mouse_input[2]*st, -1*mouse_input[3]*sr, mouse_input[4]*sr, mouse_input[5]*sr]
         command = [-1*mouse_input[1]*st, -1*mouse_input[0]*st, -1*mouse_input[2]*st, -1*mouse_input[3]*sr, mouse_input[4]*sr, mouse_input[5]*sr]
-
 
         # Frame for base->tcp
         T_tcp_in_base = np.eye(4)
@@ -294,7 +265,7 @@ class OpenBoxRobotEnv(gym.Env):
         # ── sanitise action ───────────────────────────────────────────────────
         action = np.clip(action.astype(np.float32).flatten(), -1.0, 1.0)
         self._last_action = action.copy()   # ← store the normalised action
-        TCP_policy  = self._denorm(action)
+        TCP_policy  = self._denorm(action)  # denormalise to original delta-pose space
         # scale_trans
         st = 0.01
         # scale_rot
@@ -302,12 +273,12 @@ class OpenBoxRobotEnv(gym.Env):
         # command = [-1*mouse_input[1]*st, mouse_input[0]*st, mouse_input[2]*st, -1*mouse_input[3]*sr, mouse_input[4]*sr, mouse_input[5]*sr]
         # TCP_policy = [-1*TCP_policy[1]*st, -1*TCP_policy[0]*st, -1*TCP_policy[2]*st, -1*TCP_policy[3]*sr, TCP_policy[4]*sr, TCP_policy[5]*sr]
 
-        # ───────────────────────────────────────────────────────────────────────────── Send TCP policy to UR
+        # ───── Send TCP policy to UR ──────────────────────────────────────────────────────────────────── 
         # # ─ calculate sent TCP pose
-        # # Frame for base->tcp
+        # # Frame for tcp->base
         # new_tcp_pose = self.command_in_tcp_frame(TCP_policy)  ## for servo
 
-
+        # # Frame for base
         curr_TCP = np.array(self.rtde_r.getActualTCPPose(), dtype=np.float64)
         T_tcp_in_base = np.eye(4)
         T_tcp_in_base[:3, :3] = R.from_rotvec(curr_TCP[3:6]).as_matrix()  ## tcp_pose is curtcp
@@ -337,18 +308,21 @@ class OpenBoxRobotEnv(gym.Env):
         # )
 
         if should_move:
+            ## velocity control
             # self.rtde_c.speedL(
             # TCP_policy_vel,
             # acceleration=self.MOVE_ACCEL,
             # time = 0.02)
             # # time.sleep(0.1)
             
+            ## motion control
             self.rtde_c.moveL(
                     new_tcp_pose,
                     speed=self.MOVE_SPEED,
                     acceleration=self.MOVE_ACCEL
             )
-
+        
+        ## servoJ control (not used)
         #     q_pose = self.rtde_r.getActualQ()
         #     q_target = self.rtde_c.getInverseKinematics(new_tcp_pose)
         #     dist = np.linalg.norm(np.array(q_pose)-np.array(q_target))  

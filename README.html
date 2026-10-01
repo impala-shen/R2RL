@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.8.27">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>readme</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="README_files/libs/clipboard/clipboard.min.js"></script>
+<script src="README_files/libs/quarto-html/quarto.js" type="module"></script>
+<script src="README_files/libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="README_files/libs/quarto-html/axe/axe-check.js" type="module"></script>
+<script src="README_files/libs/quarto-html/popper.min.js"></script>
+<script src="README_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="README_files/libs/quarto-html/anchor.min.js"></script>
+<link href="README_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="README_files/libs/quarto-html/quarto-syntax-highlighting-ed96de9b727972fe78a7b5d16c58bf87.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="README_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="README_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="README_files/libs/bootstrap/bootstrap-2d267fe28e688f59befa95e40b6cc099.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+
+</head>
+
+<body class="fullcontent quarto-light">
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+
+<main class="content" id="quarto-document-content">
+
+
+
+
+<section id="replay-and-reinforce-rl-r²rl" class="level1">
+<h1>Replay and Reinforce RL (R²RL)</h1>
+<p>Real-world reinforcement learning for UR robot manipulation, built with <strong>PyTorch</strong>, <strong>skrl</strong>, <strong>Gymnasium</strong>, and <strong>UR RTDE</strong>. The policy produces Cartesian pose increments; a robot environment executes them and returns measured observations, rewards, and episode-end signals.</p>
+<p>The main entry point is <a href="task_R2RL.py">task_R2RL.py</a>. The algorithm retains the historical names <code>OSRL</code>, <code>OSRL_CFG</code>, and <code>algorithms/OneShot/</code>; its output directory also retains <code>osrl</code>. This README describes the current real-robot code and its configured values, rather than a verified paper reproduction.</p>
+<section id="structure" class="level2">
+<h2 class="anchored" data-anchor-id="structure">Structure</h2>
+<pre class="text"><code>task_settings.py              Shared task presets and CLI selection
+task_R2RL.py                  R²RL training and policy evaluation
+task_IBRL.py                  RL with a frozen imitation policy
+task_ResidualRL.py            Base controller plus learned residual actions
+task_BC_noenv.py              Offline BC entry point (currently incomplete)
+OfflineTrainer.py             Updates an agent without robot rollouts
+algorithms/
+  OneShot/                    R²RL/OSRL agent, base class, and configuration
+  IBRL/                       IBRL agent and configuration
+  ResidualRL/                 Residual agent and configuration
+  BC/                         Behavior cloning agent and configuration
+  postprocessing.py           Demonstration CSV loading
+envs/
+  snapfit_env.py               Snap-fit robot environment
+  peginhole.py                 Peg-in-hole robot environment
+  plugin.py                   Assembly robot environment
+  open_box.py                 Open-box robot environment
+models/gaussian.py            Custom stochastic policy mixin
+robotiq/                      Gripper control through the RTDE interface
+data/demonstrations/          Included robot demonstrations
+docs/environment-original.txt Original research environment package snapshot</code></pre>
+<p>The online execution flow is:</p>
+<pre class="text"><code>SequentialTrainer -&gt; agent.act() -&gt; environment.step(action)
+                                      -&gt; RTDE -&gt; UR controller -&gt; robot
+                                      &lt;- measured pose and force/torque
+                  &lt;- observation, reward, terminated, truncated, info
+                  -&gt; record transition -&gt; replay memory -&gt; learning update</code></pre>
+<p>Gymnasium defines <code>reset()</code>, <code>step()</code>, <code>observation_space</code>, and <code>action_space</code>. skrl’s <code>wrap_env()</code> adapts the environment for the trainer. RTDE is the hardware communication layer; the UR controller executes the commanded motion.</p>
+</section>
+<section id="required-environment" class="level2">
+<h2 class="anchored" data-anchor-id="required-environment">Required environment</h2>
+<p>The working Conda environment is <strong><code>offline_rl</code>, Python 3.10.19</strong>. The installed package versions below were checked directly in that environment. They agree with <a href="docs/environment-original.txt">environment-original.txt</a>; skrl is an editable installation at <code>/home/cshen/IsaacLab/skrl</code>, version 2.0.0, at the pinned commit shown below.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">conda</span> activate offline_rl</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">--version</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>To create a separate environment using the same package baseline:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">conda</span> create <span class="at">-n</span> r2rl python=3.10.19</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="ex">conda</span> activate r2rl</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">-m</span> pip install torch==2.10.0 gymnasium==1.3.0 ur_rtde==1.6.2 numpy==2.2.6 pandas==2.3.3 scipy==1.15.3 tensorboard==2.20.0 tqdm==4.67.3 packaging==25.0</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">-m</span> pip install <span class="st">"git+https://github.com/Toni-SM/skrl.git@5a078cff1a611d51eb2164101cdd6fa84e3eec2d"</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>This records the existing software baseline; the new-environment installation has not been executed as part of this documentation update.</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Component</th>
+<th>Recorded version/source</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>PyTorch</td>
+<td><code>2.10.0</code></td>
+<td>Networks, optimizers, tensor computations</td>
+</tr>
+<tr class="even">
+<td>skrl</td>
+<td><code>2.0.0</code>, Git commit <code>5a078cff1a611d51eb2164101cdd6fa84e3eec2d</code></td>
+<td>Trainer, wrappers, memory, model abstractions</td>
+</tr>
+<tr class="odd">
+<td>Gymnasium</td>
+<td><code>1.3.0</code></td>
+<td>Robot environment API</td>
+</tr>
+<tr class="even">
+<td>UR RTDE (<code>ur_rtde</code>)</td>
+<td><code>1.6.2</code></td>
+<td><code>rtde_control</code> and <code>rtde_receive</code></td>
+</tr>
+<tr class="odd">
+<td>NumPy</td>
+<td><code>2.2.6</code></td>
+<td>Robot measurements and actions</td>
+</tr>
+<tr class="even">
+<td>pandas</td>
+<td><code>2.3.3</code></td>
+<td>Environment demonstration loading</td>
+</tr>
+<tr class="odd">
+<td>SciPy</td>
+<td><code>1.15.3</code></td>
+<td>Rotation vectors and frame transformations</td>
+</tr>
+<tr class="even">
+<td>TensorBoard</td>
+<td><code>2.20.0</code></td>
+<td>Training logs</td>
+</tr>
+<tr class="odd">
+<td>tqdm</td>
+<td><code>4.67.3</code></td>
+<td>Offline training progress</td>
+</tr>
+<tr class="even">
+<td>packaging</td>
+<td><code>25.0</code></td>
+<td>Version utilities imported by agents</td>
+</tr>
+</tbody>
+</table>
+<p>The snapshot includes many packages from the original research workspace. The table identifies the dependencies imported by this real-world implementation. The active online path creates a robot environment directly; it does not launch Isaac Lab.</p>
+<p>The scripts choose <code>cuda:0</code> when <code>torch.cuda.is_available()</code> is true and otherwise use CPU. Robot communication requires access to the UR robot over the network. The default robot IP is <code>192.168.1.11</code>; override it with <code>--robot-ip</code>. Tasks whose environment requires a gripper argument instantiate the included Robotiq interface.</p>
+<p>Run commands from the repository root because demonstration and checkpoint paths are relative to it.</p>
+</section>
+<section id="task-settings" class="level2">
+<h2 class="anchored" data-anchor-id="task-settings">Task settings</h2>
+<p>All online entry points select tasks through <a href="task_settings.py">task_settings.py</a>. Choose <strong><code>snapfit</code>, <code>peginhole</code>, <code>assembly</code>, or <code>openbox</code></strong> using <code>--task</code>, or change the script’s <code>DEFAULT_TASK</code> variable. The selected preset supplies the environment class, home pose, observation dimension, episode limit, and default demonstration path. Log directories follow the selected task name.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_R2RL.py <span class="at">--task</span> snapfit</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_R2RL.py <span class="at">--task</span> peginhole</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_R2RL.py <span class="at">--task</span> assembly</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_R2RL.py <span class="at">--task</span> openbox <span class="at">--demo-file</span> path/to/openbox_demo.csv</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 50%">
+<col style="width: 50%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Shared option</th>
+<th>Setting</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>--task</code></td>
+<td>Task preset; defaults are set with <code>DEFAULT_TASK</code> in each entry point</td>
+</tr>
+<tr class="even">
+<td><code>--robot-ip</code></td>
+<td>Robot address; default <code>192.168.1.11</code></td>
+</tr>
+<tr class="odd">
+<td><code>--home-pose X Y Z RX RY RZ</code></td>
+<td>Override the selected task’s home pose</td>
+</tr>
+<tr class="even">
+<td><code>--max-steps</code></td>
+<td>Override the episode limit; all presets default to 100</td>
+</tr>
+<tr class="odd">
+<td><code>--demo-file</code></td>
+<td>Override the selected task’s demonstration CSV</td>
+</tr>
+</tbody>
+</table>
+<p>Edit <code>TASKS</code> in <code>task_settings.py</code> to change the defaults for a fixture. Home poses were copied from the existing robot scripts, including the previous peg-in-hole example. A pose is <code>[x, y, z, rx, ry, rz]</code>: translation in meters and orientation as a rotation vector in radians. Home poses and environment reset waypoints remain specific to the physical setup. Reset routines move the robot, clear episode history, and zero the force/torque sensor.</p>
+<p>The registry selects snap-fit data for snap-fit, peg-in-hole data for peg-in-hole, and <code>PegInHole/assembly.csv</code> for assembly. <strong>No open-box demonstration is included</strong>, so supply <code>--demo-file</code> for demonstration-based training on that task. Dimension and nonempty-file checks run before connecting the robot; matching dimensions alone do not establish that a demonstration matches the physical task or action convention.</p>
+<p>The default training budgets are 5,000 environment steps for R²RL, 10,000 for IBRL, and 10,000 for Residual RL. Residual RL supports <code>--timesteps</code>. R²RL and IBRL express their budgets as multiples of the configured episode limit.</p>
+<section id="observations-and-actions" class="level3">
+<h3 class="anchored" data-anchor-id="observations-and-actions">Observations and actions</h3>
+<p>All robot environments accept six normalized actions in <code>[-1, 1]</code>. <code>_denorm()</code> converts them to pose increments using <code>ACTION_MIN</code> and <code>ACTION_MAX</code>:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>delta_pose <span class="op">=</span> (action <span class="op">+</span> <span class="dv">1</span>) <span class="op">/</span> <span class="dv">2</span> <span class="op">*</span> (ACTION_MAX <span class="op">-</span> ACTION_MIN <span class="op">+</span> <span class="fl">1e-8</span>) <span class="op">+</span> ACTION_MIN</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Environment</th>
+<th>Observation size</th>
+<th>Contents</th>
+<th>Active action interpretation</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Snap-fit</td>
+<td>19</td>
+<td>Relative TCP pose (6), wrench (6), accumulated X force (1), previous action (6)</td>
+<td>Direct addition to current base-frame pose</td>
+</tr>
+<tr class="even">
+<td>Open-box</td>
+<td>19</td>
+<td>Same layout as snap-fit</td>
+<td>Direct addition to current base-frame pose</td>
+</tr>
+<tr class="odd">
+<td>Peg-in-hole</td>
+<td>18</td>
+<td>Relative TCP pose (6), wrench (6), previous action (6)</td>
+<td>Direct addition to current base-frame pose</td>
+</tr>
+<tr class="even">
+<td>Assembly</td>
+<td>18</td>
+<td>Same layout as peg-in-hole</td>
+<td>Tool-relative increment through <code>command_in_tcp_frame()</code></td>
+</tr>
+</tbody>
+</table>
+<p>Environment observations are clipped and normalized with the <code>OBS_LOW</code>/<code>OBS_HIGH</code> arrays in each <code>_get_obs()</code>. Relative translation is <code>current_xyz - home_xyz</code>; relative orientation uses <code>R_home.inv() * R_current</code>. Previous actions remain in normalized units. Demonstrations must match these units, ordering, and action conventions.</p>
+<p>Physical action bounds, in <code>[dx, dy, dz, drx, dry, drz]</code> order:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Tasks</th>
+<th><code>ACTION_MIN</code></th>
+<th><code>ACTION_MAX</code></th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Snap-fit / open-box</td>
+<td><code>[-0.001, -0.0005, -0.0003, -0.01, -0.01, -0.01]</code></td>
+<td><code>[0.001, 0.0005, 0.0007, 0.01, 0.01, 0.01]</code></td>
+</tr>
+<tr class="even">
+<td>Peg-in-hole / assembly</td>
+<td><code>[-0.000529, -0.000375, -0.001301, -0.001067, -0.000417, -0.00127]</code></td>
+<td><code>[0.000529, 0.000375, 0.000051, 0.001067, 0.000417, 0.00127]</code></td>
+</tr>
+</tbody>
+</table>
+<p>Translation bounds are meters; rotation bounds are radians. Because Z bounds are asymmetric, a normalized zero action does not correspond to zero Z displacement.</p>
+<p>Assembly remaps translation to <code>[-dy, -dx, -dz]</code> and rotation to <code>[-drx, dry, drz]</code>, with both helper scales set to 1. It computes <code>T_target = T_current @ T_rotation @ T_translation</code>, then sends the absolute base-frame target. The other environments add rotation-vector components directly as well as positions; this is not general incremental rotation composition. Snap-fit also calculates a tool-frame target, but the active command uses direct pose addition.</p>
+<p>All four <code>step()</code> methods use <code>moveL</code> with speed <code>0.3 m/s</code> and acceleration <code>0.3 m/s²</code>. The speed/servo alternatives are commented out. <code>CTRL_HZ = 20</code> is declared, but the loop sleep is commented out; step duration depends on motion completion and processing.</p>
+</section>
+<section id="rewards-and-episode-endings" class="level3">
+<h3 class="anchored" data-anchor-id="rewards-and-episode-endings">Rewards and episode endings</h3>
+<p>The current rewards use measured robot signals:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 50%">
+<col style="width: 50%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Task</th>
+<th>Nonzero reward condition and value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Snap-fit</td>
+<td>If <code>100 &lt; accumulated_Fx &lt; 2000</code> and <code>Fx &gt; 5 N</code>, reward is <code>1 - min(0.02, abs(z - target_z)) / 0.02</code>; <code>target_z = home_z + 0.02</code></td>
+</tr>
+<tr class="even">
+<td>Open-box</td>
+<td>If <code>100 &lt; accumulated_Fx &lt; 10000</code>, <code>Fx &gt; 3 N</code>, and <code>dist &lt; height - 0.002</code>, reward is <code>1 - dist / height</code>; <code>dist = clip(target_z - z, 0, height)</code></td>
+</tr>
+<tr class="odd">
+<td>Peg-in-hole</td>
+<td>Reward 1 when absolute base-frame <code>z &lt; 0.098 m</code>, otherwise 0</td>
+</tr>
+<tr class="even">
+<td>Assembly</td>
+<td>Reward 1 when absolute base-frame <code>y &lt; -0.004 m</code> and <code>abs(Fx) &gt; 5 N</code>; reward 0.3 when <code>y &lt; -0.001 m</code> and <code>abs(Fx) &gt; 5 N</code>; otherwise 0</td>
+</tr>
+</tbody>
+</table>
+<p>Accumulated X force is a sum of force samples, not a time-integrated force. Tune reward thresholds and normalization for the actual fixture.</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Task</th>
+<th>Total force limit</th>
+<th>Additional termination conditions</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Snap-fit</td>
+<td>90 N</td>
+<td><code>abs(Fx) &gt; 50</code>, <code>abs(Fy) &gt; 30</code>, <code>abs(Fz) &gt; 50</code>, or <code>Fx &lt; -20 N</code></td>
+</tr>
+<tr class="even">
+<td>Open-box</td>
+<td>100 N</td>
+<td><code>abs(Fx) &gt; 60</code>, <code>abs(Fy) &gt; 30</code>, <code>abs(Fz) &gt; 50</code>, <code>Fx &lt; -20 N</code>, or <code>z &gt; target_z + 0.05 m</code></td>
+</tr>
+<tr class="odd">
+<td>Peg-in-hole</td>
+<td>100 N</td>
+<td><code>abs(Fx) &gt; 30</code>, <code>abs(Fy) &gt; 30</code>, or <code>abs(Fz) &gt; 50 N</code></td>
+</tr>
+<tr class="even">
+<td>Assembly</td>
+<td>100 N</td>
+<td><code>abs(Fx) &gt; 40</code>, <code>abs(Fy) &gt; 15</code>, or <code>abs(Fz) &gt; 15 N</code></td>
+</tr>
+</tbody>
+</table>
+<p>At the configured episode limit, <code>step()</code> reports truncation unless another termination condition is reached. Reward attainment does not itself terminate the episode. Peg-in-hole and assembly calculate <code>range_limit_reach</code>, but do not include it in the termination return. Python force checks happen after the motion command returns.</p>
+</section>
+</section>
+<section id="demonstration-data" class="level2">
+<h2 class="anchored" data-anchor-id="demonstration-data">Demonstration data</h2>
+<p>Included CSVs use <code>observations.i</code>, <code>next_observations.i</code>, <code>actions.i</code>, <code>rewards.0</code>, <code>terminated.0</code>, and <code>truncated.0</code>; the 10-demo files also contain <code>useRL.0</code>.</p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>File</th>
+<th>Transitions</th>
+<th>Observation / action dimensions</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><a href="data/demonstrations/SnapFit/snapfit_fixscale.csv">SnapFit/snapfit_fixscale.csv</a></td>
+<td>100</td>
+<td>19 / 6</td>
+</tr>
+<tr class="even">
+<td><a href="data/demonstrations/SnapFit/one_demo_downsample_dn1.csv">SnapFit/one_demo_downsample_dn1.csv</a></td>
+<td>100</td>
+<td>19 / 6</td>
+</tr>
+<tr class="odd">
+<td><a href="data/demonstrations/SnapFit/10demos.csv">SnapFit/10demos.csv</a></td>
+<td>1,000</td>
+<td>19 / 6</td>
+</tr>
+<tr class="even">
+<td><a href="data/demonstrations/PegInHole/assembly.csv">PegInHole/assembly.csv</a></td>
+<td>100</td>
+<td>18 / 6</td>
+</tr>
+<tr class="odd">
+<td><a href="data/demonstrations/PegInHole/10demos.csv">PegInHole/10demos.csv</a></td>
+<td>1,000</td>
+<td>18 / 6</td>
+</tr>
+</tbody>
+</table>
+<p>Task presets use absolute paths under <code>data/demonstrations/</code>. The selected file is passed to the agent through <code>cfg.demo_file</code>, and expert replay capacity follows its row count. Online environment construction does not read demonstration CSVs; R²RL policy evaluation therefore does not require one. IBRL still requires demonstrations for its existing imitation/RL selection setup, and a Residual RL one-demo base requires its action sequence during training and evaluation.</p>
+<p>For recorded-observation mode, an environment loads its task preset CSV or an explicit constructor <code>demo_file</code>. Open-box requires that explicit path because no dataset is included.</p>
+<p><code>offline_mode=True</code> on a robot environment is not a hardware-free training mode: it selects recorded observations, while reset and motion code still use hardware. Use the dedicated <code>OfflineTrainer</code> for updates without rollouts.</p>
+</section>
+<section id="rl-hyperparameters" class="level2">
+<h2 class="anchored" data-anchor-id="rl-hyperparameters">RL hyperparameters</h2>
+<p>Values below come from the entry points, with inherited configuration defaults where the scripts do not override them. They are initial configuration values; agents can change replay behavior during training. Edit the entry-point <code>cfg</code> block for an experiment and consult the corresponding <code>*_cfg.py</code> for other options.</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Parameter</th>
+<th>R²RL</th>
+<th>IBRL</th>
+<th>Residual RL</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Environment count</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+</tr>
+<tr class="even">
+<td>Online replay capacity</td>
+<td>10,000</td>
+<td>10,000</td>
+<td>10,000</td>
+</tr>
+<tr class="odd">
+<td>Expert memory capacity</td>
+<td>Selected CSV row count</td>
+<td>Selected CSV row count</td>
+<td>Selected CSV row count in <code>one_demo</code> mode</td>
+</tr>
+<tr class="even">
+<td>Batch size</td>
+<td>64</td>
+<td>64</td>
+<td>64</td>
+</tr>
+<tr class="odd">
+<td>Gradient steps per update</td>
+<td>1</td>
+<td>3</td>
+<td>3</td>
+</tr>
+<tr class="even">
+<td>Learning rate</td>
+<td><code>1e-4</code></td>
+<td><code>1e-4</code></td>
+<td><code>3e-4</code></td>
+</tr>
+<tr class="odd">
+<td>Discount factor</td>
+<td>0.99</td>
+<td>0.99</td>
+<td>0.99</td>
+</tr>
+<tr class="even">
+<td>Target update coefficient (<code>polyak</code>)</td>
+<td>0.005</td>
+<td>0.005</td>
+<td>0.005</td>
+</tr>
+<tr class="odd">
+<td>Policy update delay</td>
+<td>2</td>
+<td>2</td>
+<td>2</td>
+</tr>
+<tr class="even">
+<td><code>learning_starts</code></td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr class="odd">
+<td>Initial <code>random_timesteps</code> setting</td>
+<td>100</td>
+<td>100</td>
+<td>100; initially executes zero residual</td>
+</tr>
+<tr class="even">
+<td>Policy</td>
+<td>Stochastic</td>
+<td>Stochastic</td>
+<td>Stochastic by default</td>
+</tr>
+<tr class="odd">
+<td>Critic ensemble size</td>
+<td>5</td>
+<td>5</td>
+<td>2 critics</td>
+</tr>
+<tr class="even">
+<td><code>q_method</code></td>
+<td><code>iql</code></td>
+<td><code>bellman</code></td>
+<td><code>bellman</code></td>
+</tr>
+<tr class="odd">
+<td><code>policy_method</code></td>
+<td><code>DDPG+BC</code></td>
+<td><code>maxQ</code></td>
+<td><code>maxQ</code></td>
+</tr>
+<tr class="even">
+<td>Expectile</td>
+<td>0.70</td>
+<td>0.70</td>
+<td>0.70 when using IQL</td>
+</tr>
+<tr class="odd">
+<td>Action selection</td>
+<td><code>select_act=True</code>, <code>on_state</code></td>
+<td><code>select_act=True</code>, <code>on_state</code></td>
+<td>Base action plus clipped residual</td>
+</tr>
+<tr class="even">
+<td><code>TTT</code></td>
+<td>True</td>
+<td>False</td>
+<td>Not configured</td>
+</tr>
+<tr class="odd">
+<td><code>OPEX</code></td>
+<td>False</td>
+<td>False</td>
+<td>Not configured</td>
+</tr>
+<tr class="even">
+<td>Initial/fixed entropy coefficient</td>
+<td>0.1</td>
+<td>0.1</td>
+<td>0.1</td>
+</tr>
+<tr class="odd">
+<td>Learn entropy coefficient</td>
+<td>False</td>
+<td>False</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Residual action scale</td>
+<td>Not applicable</td>
+<td>Not applicable</td>
+<td>1.0 of the environment action half-range</td>
+</tr>
+</tbody>
+</table>
+<p>R²RL and IBRL configure Gaussian exploration standard deviation 0.1, a linear multiplier <code>max(1 - timestep / timesteps, 0.01)</code>, target smoothing standard deviation 0.2, and smoothing clip 0.5. These noise settings apply only in the algorithm branches that use them; both default to stochastic actors. Residual RL configures explicit exploration noise only for deterministic policies: standard deviation 0.01 and multiplier floor 0.05. Deterministic Bellman updates additionally use smoothing standard deviation 0.02 and clip 0.05.</p>
+<p>Actor and critic hidden layers are generally <code>256 -&gt; 128 -&gt; 64</code> with ReLU; the R²RL/IBRL value network uses ELU. Stochastic actors output mean and log-standard-deviation heads with log-standard-deviation bounds <code>[-5, 1]</code>. The deterministic Residual RL output head starts at zero; all residual policies execute a zero residual during the initial 100-step base-only phase.</p>
+<p>Residual RL supports independent <code>--q-method {bellman,iql}</code>, <code>--policy-method {maxQ,DDPG+BC}</code>, and <code>--deterministic-policy</code> / <code>--no-deterministic-policy</code> choices. Its DDPG+BC settings are <code>ddpg_bc_alpha=1</code> and <code>bc_loss_scale=1.0</code>. A checkpoint base receives raw environment observations by default (<code>preprocess_base_observations=False</code>).</p>
+<p>Residual RL enables <code>RunningStandardScaler</code> for agent observations. R²RL and IBRL currently assign <code>cfg.observation_preprocessor_preprocessor</code>, whereas the agent reads <code>cfg.observation_preprocessor</code>; the extra-suffix assignment does not enable that observation preprocessor. Their state preprocessor is configured separately. Environment normalization still runs.</p>
+<p>BC’s configured values are 7,500 expert-memory slots, batch size 64, two gradient steps per update, learning rate <code>3e-4</code>, seed 43, and 10,000 offline trainer iterations. The entry point is unfinished and is not part of the runnable online task selector.</p>
+</section>
+<section id="training-and-evaluation" class="level2">
+<h2 class="anchored" data-anchor-id="training-and-evaluation">Training and evaluation</h2>
+<p>Configure the task preset and physical fixture, then choose the method. Supply checkpoints explicitly for the selected task; no trained checkpoints are included. R²RL starts from scratch when <code>--checkpoint</code> is omitted. A provided checkpoint warm-starts training or supplies the policy for evaluation.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># R²RL training and warm start.</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_R2RL.py <span class="at">--task</span> snapfit</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_R2RL.py <span class="at">--task</span> snapfit <span class="at">--checkpoint</span> path/to/agent.pt</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Evaluate the policy mean; --stochastic-evaluation enables sampling.</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_R2RL.py <span class="at">--task</span> snapfit <span class="at">--eval</span> <span class="at">--checkpoint</span> path/to/agent.pt <span class="at">--eval-episodes</span> 30</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a><span class="co"># IBRL requires a compatible frozen imitation policy.</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_IBRL.py <span class="at">--task</span> assembly <span class="at">--bc-checkpoint</span> path/to/assembly_bc.pt</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Residual training with the selected task's demonstration base.</span></span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_ResidualRL.py <span class="at">--task</span> snapfit <span class="at">--base-policy-type</span> one_demo <span class="at">--timesteps</span> 10000</span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a><span class="co"># Open-box requires a task-specific demonstration supplied by the user.</span></span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_ResidualRL.py <span class="at">--task</span> openbox <span class="at">--base-policy-type</span> one_demo <span class="at">--demo-file</span> path/to/openbox_demo.csv</span>
+<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a><span class="co"># Residual training with a frozen stochastic base policy.</span></span>
+<span id="cb7-18"><a href="#cb7-18" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_ResidualRL.py <span class="at">--task</span> snapfit <span class="at">--base-policy-type</span> checkpoint <span class="at">--base-checkpoint</span> path/to/base_agent.pt</span>
+<span id="cb7-19"><a href="#cb7-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-20"><a href="#cb7-20" aria-hidden="true" tabindex="-1"></a><span class="co"># Evaluate with the same task/base configuration used during training.</span></span>
+<span id="cb7-21"><a href="#cb7-21" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> task_ResidualRL.py <span class="at">--task</span> snapfit <span class="at">--eval</span> <span class="at">--checkpoint</span> path/to/residual_agent.pt <span class="at">--base-policy-type</span> one_demo</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>IBRL’s <code>--bc-checkpoint</code> must match its frozen deterministic actor (<code>128 -&gt; 64 -&gt; 32</code>, Tanh output), the task’s observation size, and its preprocessing/action convention. Residual RL’s checkpoint base must match the stochastic actor used in <code>task_ResidualRL.py</code>. Supplying a file only verifies existence before connecting; model weights still must match the architecture when loaded.</p>
+<p>R²RL evaluation bypasses demonstration action selection and agent updates. Its trainer budget is <code>max_steps * eval_episodes</code> environment steps, so early-ended episodes can affect the actual episode count. The CLI options <code>--eval</code>, <code>--checkpoint</code>, and task overrides are supported by all online entry points; only R²RL has <code>--eval-episodes</code> and <code>--stochastic-evaluation</code>.</p>
+<section id="logs-and-checkpoints" class="level3">
+<h3 class="anchored" data-anchor-id="logs-and-checkpoints">Logs and checkpoints</h3>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Entry point</th>
+<th>Output directory</th>
+<th>Log interval</th>
+<th>Checkpoint interval</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>R²RL</td>
+<td><code>runs/torch/&lt;task_name&gt;/osrl</code></td>
+<td>100 steps</td>
+<td><code>auto</code></td>
+</tr>
+<tr class="even">
+<td>IBRL</td>
+<td><code>runs/torch/&lt;task_name&gt;/exp1</code></td>
+<td>100 steps</td>
+<td><code>auto</code></td>
+</tr>
+<tr class="odd">
+<td>Residual RL</td>
+<td><code>runs/torch/&lt;task_name&gt;/residual_rl/...</code></td>
+<td>100 steps</td>
+<td>500 steps</td>
+</tr>
+<tr class="even">
+<td>BC</td>
+<td><code>runs/torch/&lt;task_name&gt;</code></td>
+<td><code>auto</code></td>
+<td><code>auto</code></td>
+</tr>
+</tbody>
+</table>
+<p>Experiment subdirectories are created beneath these roots. Residual RL uses a configuration-specific suffix except for deterministic Bellman/maxQ training. Online scripts disable log/checkpoint intervals during evaluation.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="ex">tensorboard</span> <span class="at">--logdir</span> runs/torch</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+</section>
+<section id="unfinished-bc-entry-point" class="level2">
+<h2 class="anchored" data-anchor-id="unfinished-bc-entry-point">Unfinished BC entry point</h2>
+<p><code>OfflineTrainer</code> performs learning updates without robot rollouts. However, <code>task_BC_noenv.py</code> is unfinished: it references undefined robot/space variables, declares unused 36-observation/8-action constants, and points to an unavailable lift CSV. It is documented here for structure and configured hyperparameters, not as a runnable robot BC workflow.</p>
+</section>
+<section id="validation" class="level2">
+<h2 class="anchored" data-anchor-id="validation">Validation</h2>
+<p>Run the task-selection tests without connecting hardware:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="ex">conda</span> activate offline_rl</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">-m</span> unittest discover <span class="at">-s</span> tests <span class="at">-v</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>The tests cover task/data dimensions, environment construction without online CSV reads, CLI overrides, recorded observations, and configuration rejection before robot connections. Actual robot rollouts and physical reset trajectories require validation on the intended fixture.</p>
+</section>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

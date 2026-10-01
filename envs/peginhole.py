@@ -10,18 +10,16 @@ from scipy.spatial.transform import Rotation as R
 class PegInHoleRobotEnv(gym.Env):
     """
     Online gym environment wrapping the real UR robot via RTDE.
-    Observations : 19-dim  (e.g. TCP pose 6 + F/T wrench 6)
+    Observations : 18-dim  (e.g. TCP pose 6 + F/T wrench 6 + prev action 6)
     Actions      : 6-dim   (delta-pose in original scale, clipped)
     """
-
-    metadata = {"render_modes": []}
     # # ── Task config ───────────────────────────────────────
     # # ── action bounds found in in the demo ───────────────────────────────────────
     # ACTION_MIN = np.array([-0.00080266, -0.00042364, -0.00046984,
     #                        -0.00098748, -0.00063748, -0.00429801], dtype=np.float32)
     # ACTION_MAX = np.array([ 0.00133239,  0.00044393,  0.0021458,
     #                         0.0015833,   0.00063114,  0.00541633], dtype=np.float32)
-    # ── Constrained action bounds (TODO: need smarter solution)) ───────────────────────────────────────
+    # ── Constrained action bounds (changed to mansual defined velocity limit based on task&safe exploration) ───────────────────────────────────────
     ACTION_MIN = np.array([-5.290e-04, -3.750e-04, -0.001301, -1.067e-03,  -4.170e-04, -0.00127 ], dtype=np.float32)
     ACTION_MAX = np.array([5.290e-04, 3.750e-04, 0.000051, 1.067e-03,  4.170e-04, 0.00127 ], dtype=np.float32) # [5.290e-04 2.750e-04 2.800e-05 1.067e-03 4.170e-04 8.090e-04]
 
@@ -31,7 +29,7 @@ class PegInHoleRobotEnv(gym.Env):
     MOVE_ACCEL    = 0.3        # [m/s²]
     
 
-    def __init__(self, rtde_c, rtde_r, gripper, home_pose: np.array, max_steps: int = 150, verbose: bool = False, offline_mode = True, device = 'cpu'):
+    def __init__(self, rtde_c, rtde_r, gripper, home_pose: np.array, max_steps: int = 150, verbose: bool = False, offline_mode = True, device = 'cpu', demo_file=None):
         super().__init__()
         self.rtde_c   = rtde_c
         self.rtde_r   = rtde_r
@@ -81,17 +79,17 @@ class PegInHoleRobotEnv(gym.Env):
             high= np.ones(6, dtype=np.float32),
         )
 
-        df = pd.read_csv("demos/Peginhole/assembly.csv")
+        # Recorded observations are only needed in replay-observation mode.
+        if self._offline_mode:
+            from task_settings import TASKS
 
-        # ── Extract observations (12 dims) and actions (6 dims) ───────────────────────
-        obs_cols    = [f"observations.{i}" for i in range(18)]
-        action_cols = [f"actions.{i}" for i in range(6)]
-        gripper_cols = [f"actions.6"]  # Assuming gripper action is the 7th column
+            demo_path = demo_file if demo_file is not None else TASKS["peginhole"].demo_file
+            if demo_path is None:
+                raise ValueError("No recorded observations configured; provide demo_file")
+            df = pd.read_csv(demo_path)
+            obs_cols = [f"observations.{i}" for i in range(18)]
+            self._observations = df[obs_cols].values.astype(np.float32)
 
-        self._observations = df[obs_cols].values.astype(np.float32)    # (5000, 12)
-        actions      = df[action_cols].values.astype(np.float32) # (5000, 6)
-        # self.gripper_state      = df[gripper_cols].values.astype(np.float32) # (5000, 1)
- 
     # ── helpers ───────────────────────────────────────────────────────────────
     def _denorm(self, action_norm: np.ndarray) -> np.ndarray:
         """Map [-1,1] → original delta-pose space."""
@@ -110,7 +108,7 @@ class PegInHoleRobotEnv(gym.Env):
         if self._offline_mode:
             # offline setting
             # Load the gooddemo file
-            obs = self._observations[self._steps+500*0,:]
+            return self._observations[self._steps].copy()
         else:
             ## online setting
             curr_Force = self.rtde_r.getActualTCPForce()
@@ -164,22 +162,12 @@ class PegInHoleRobotEnv(gym.Env):
         curr_Force = np.array(curr_Force)
         force_mag = np.linalg.norm(curr_Force[:3])
 
-        
         # dist = np.clip(self.target_z - curr_TCP[2], 0.0, self.height)
-        # reward = 1 * (1 - dist/self.height) 
-        print("TCP z:", curr_TCP[2])
-
-        # # print("force_mag", force_mag)
-        # print("curr_Force[0]", curr_Force[3])
-        # print("curr_Force[1]", curr_Force[4])
-        # print("curr_Force[2]", curr_Force[5])
 
         # open box reward
         if curr_TCP[2] < 0.098: # snapfit0
             reward = 1.
-            # reward = (1 - (curr_TCP[2]-0.05)/0.05)  #  distance bonus
-        # elif self.force_limit_reach:
-        #     reward = -1.  # safety violation
+            # reward = (1 - (curr_TCP[2]-0.05)/0.05)  #  distance bonus, only used if the insertion depth matters
         else:
             reward = 0.
 
@@ -200,9 +188,6 @@ class PegInHoleRobotEnv(gym.Env):
         print("force_limit_reach", self.force_limit_reach)
         e_stop    = force_mag > self.FORCE_LIMIT
         return timeout or e_stop or self.force_limit_reach
-    
-    # def _admittance_ctr(self, obs: np.ndarray, action: np.ndarray) -> float:
-    #     f
 
     # ── gym API ───────────────────────────────────────────────────────────────
     def reset(self, *, seed=None, options=None):
@@ -233,14 +218,7 @@ class PegInHoleRobotEnv(gym.Env):
             self.rtde_c.moveL(self.mid_pos1.tolist(), speed=0.1, acceleration=0.05)
             time.sleep(0.1)                        # wait for motion to settle
         self.rtde_c.moveL(noisy_pose, speed=0.1, acceleration=0.1)
-        # # self.rtde_c.moveL(self.home.tolist(), speed=0.1, acceleration=0.1)
-        # # self.gripper.set_gripper(toggle_bool=0)
-        # self.rtde_c.moveL(self.mid_pos2.tolist(), speed=0.1, acceleration=0.05)
-        # time.sleep(0.2)
-        # self.gripper.set_gripper(toggle_bool=1)
-        # # self.rtde_c.moveL(self.mid_pos3.tolist(), speed=0.1, acceleration=0.1)
-        # # time.sleep(0.2)
-        # self.rtde_c.moveL(self.init_pos1.tolist(), speed=0.1, acceleration=0.1)
+
 
         time.sleep(0.1)                        # wait for motion to settle
         self.rtde_c.zeroFtSensor()             # zero F/T after reaching home
@@ -251,21 +229,7 @@ class PegInHoleRobotEnv(gym.Env):
         return obs, {}
 
 
-    # ── Evaluation ───────────────────────────────────────────────────────────
-    def _go_home(self) -> None:
-        """Move robot back to home pose and re-zero the F/T sensor."""
-        # self.rtde_c.servoStop()
-        print("before")
-        self.rtde_c.speedStop()
-        time.sleep(0.3)
-        self.rtde_c.moveL(self.home.tolist(), speed=self.MOVE_SPEED, acceleration=self.MOVE_ACCEL)
-        print("after")
-        time.sleep(0.3)
-        self.rtde_c.zeroFtSensor()
-        time.sleep(0.1)
-
     def command_in_tcp_frame(self, mouse_input):
-
         # Get current TCP pose
         tcp_pose = self.rtde_r.getActualTCPPose()
         current_forces = self.rtde_r.getActualTCPForce()
@@ -324,28 +288,12 @@ class PegInHoleRobotEnv(gym.Env):
         # command = [-1*mouse_input[1]*st, mouse_input[0]*st, mouse_input[2]*st, -1*mouse_input[3]*sr, mouse_input[4]*sr, mouse_input[5]*sr]
         # new_tcp_pose = [-1*TCP_policy[1]*st, -1*TCP_policy[0]*st, -1*TCP_policy[2]*st, -1*TCP_policy[3]*sr, TCP_policy[4]*sr, TCP_policy[5]*sr]
 
-        # ───────────────────────────────────────────────────────────────────────────── Send TCP policy to UR
+        # ──── Send TCP policy to UR ───────────────────────────────────────────────────────────────────────── 
         # # ─ calculate sent TCP pose
-        # # Frame for base->tcp
+        # # Frame for tcp->base
         # new_tcp_pose = self.command_in_tcp_frame(TCP_policy)  ## for servo
 
-
         curr_TCP = np.array(self.rtde_r.getActualTCPPose(), dtype=np.float64)
-        T_tcp_in_base = np.eye(4)
-        T_tcp_in_base[:3, :3] = R.from_rotvec(curr_TCP[3:6]).as_matrix()  ## tcp_pose is curtcp
-        T_tcp_in_base[:3, 3] = curr_TCP[:3]
-
-        # # # Create target transformation with policy output
-        # T_delta = np.eye(4)
-        # T_delta[:3, :3] = R.from_rotvec(TCP_policy[3:6]).as_matrix()
-        # T_delta[:3, 3] = TCP_policy[:3]
-
-        # T_target_in_base = T_tcp_in_base @ T_delta
-
-        # # Extract new position and orientation
-        # new_position = T_target_in_base[:3, 3]
-        # new_orientation = R.from_matrix(T_target_in_base[:3, :3]).as_rotvec()
-
         new_tcp_pose = TCP_policy + curr_TCP
         TCP_policy_vel = TCP_policy/0.02
 

@@ -1,7 +1,7 @@
 """Train a composable residual policy on top of a fixed base controller.
 
 One-demo example (the default configuration below):
-    python task_ResidualRL.py
+    python task_ResidualRL.py --task snapfit
 
 Checkpoint-policy example:
     python task_ResidualRL.py \
@@ -9,15 +9,15 @@ Checkpoint-policy example:
         --base-checkpoint runs/torch/snapfit/BC1/checkpoints/agent_30000.pt
 
 Examples:
-    # Current TD3 behavior
-    python task_ResidualRL.py --q-method bellman --policy-method maxQ
+    # Deterministic Bellman/maxQ updates
+    python task_ResidualRL.py --task snapfit --deterministic-policy --q-method bellman --policy-method maxQ
 
     # Stochastic Bellman critic with DDPG+BC actor regularization
-    python task_ResidualRL.py --no-deterministic-policy \
+    python task_ResidualRL.py --task snapfit --no-deterministic-policy \
         --q-method bellman --policy-method DDPG+BC
 
     # Deterministic IQL critic target with DDPG+BC actor regularization
-    python task_ResidualRL.py --q-method iql --policy-method DDPG+BC
+    python task_ResidualRL.py --task snapfit --deterministic-policy --q-method iql --policy-method DDPG+BC
 """
 
 import argparse
@@ -38,13 +38,11 @@ from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 
 from algorithms.ResidualRL import ResidualRL, ResidualRL_CFG
-from envs.snapfit_env import SnapFitRobotEnv
-from envs.open_box import OpenBoxRobotEnv
-from envs.assembly import AssemblyRobotEnv
-from envs.peginhole import PegInHoleRobotEnv
+from task_settings import TASKS, add_task_arguments, resolve_demo, validate_demo, create_robot_env
 from models.gaussian import GaussianMixin
 from rtde_control import RTDEControlInterface
 from rtde_receive import RTDEReceiveInterface
+from robotiq.robotiq_gripper_control import RobotiqGripper
 
 set_seed(42)
 
@@ -178,14 +176,17 @@ class Value(DeterministicMixin, Model):
         return self.net(inputs["observations"]), {}
 
 # Choose the base controller here. CLI arguments can override these values.
+DEFAULT_TASK = "openbox"
 BASE_POLICY_TYPE = "one_demo"  # "one_demo" or "checkpoint"
 DETERMINISTIC_POLICY = False
 Q_METHOD = "bellman"  # "bellman" or "iql"
 POLICY_METHOD = "maxQ"  # "maxQ" or "DDPG+BC"
-DEMO_FILE_PATH = "demos/snapfit0/snapfit_fixscale.csv"
-BASE_CHECKPOINT_PATH = "./runs/torch/snapfit/osrl/OSRL_new/checkpoints/best_agent.pt"  # e.g. "runs/torch/snapfit/BC1/checkpoints/agent_30000.pt"
+DEMO_FILE_PATH = None
+BASE_CHECKPOINT_PATH = None
 
 parser = argparse.ArgumentParser()
+add_task_arguments(parser, default_task=DEFAULT_TASK)
+parser.set_defaults(demo_file=DEMO_FILE_PATH)
 parser.add_argument(
     "--deterministic-policy",
     action=argparse.BooleanOptionalAction,
@@ -211,60 +212,51 @@ parser.add_argument(
     help="Fixed controller used underneath the learned residual",
 )
 parser.add_argument(
-    "--demo-file",
-    default=DEMO_FILE_PATH,
-    help="One-demo CSV path (overrides DEMO_FILE_PATH)",
-)
-parser.add_argument(
     "--base-checkpoint",
     default=BASE_CHECKPOINT_PATH,
     help="Frozen base-controller checkpoint (overrides BASE_CHECKPOINT_PATH)",
 )
 parser.add_argument("--checkpoint", default=None, help="Optional ResidualRL checkpoint")
 parser.add_argument("--eval", action="store_true")
-parser.add_argument("--robot-ip", default="192.168.1.11")
 parser.add_argument("--timesteps", type=int, default=10000)
 args, _ = parser.parse_known_args()
 
 
+task = TASKS[args.task]
+if args.max_steps is not None and args.max_steps < 1:
+    parser.error("--max-steps must be positive")
+if args.timesteps < 1:
+    parser.error("--timesteps must be positive")
+if args.checkpoint and not os.path.isfile(args.checkpoint):
+    parser.error(f"ResidualRL checkpoint not found: {args.checkpoint}")
+demo_rows = 0
 if args.base_policy_type == "checkpoint":
-    if not args.base_checkpoint:
-        parser.error("Set BASE_CHECKPOINT_PATH or pass --base-checkpoint in checkpoint mode")
-    if not os.path.isfile(args.base_checkpoint):
-        parser.error(f"base checkpoint not found: {args.base_checkpoint}")
-elif not os.path.isfile(args.demo_file):
-    parser.error(f"one-demo CSV not found: {args.demo_file}")
+    if not args.base_checkpoint or not os.path.isfile(args.base_checkpoint):
+        parser.error("Set BASE_CHECKPOINT_PATH or supply an existing --base-checkpoint")
+else:
+    demo_file = resolve_demo(task, args.demo_file)
+    try:
+        demo_rows = validate_demo(demo_file, task)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    args.demo_file = str(demo_file)
 
 device_name = "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
-# ── helper ──────────────────────────────────────────────────────────
-def Get_initTCPpos():
-    Init_TCP = rtde_r.getActualTCPPose()
-    return Init_TCP
-
-# ── robot connection ──────────────────────────────────────────────────────────
-ROBOT_IP  = "192.168.1.11"
+# Shared task selection keeps the environment, home pose, and data together.
+ROBOT_IP = args.robot_ip
 rtde_c = RTDEControlInterface(ROBOT_IP)
 rtde_r = RTDEReceiveInterface(ROBOT_IP)
 rtde_c.zeroFtSensor()
-# Keep the task-specific safe pose explicit, as in the existing online scripts.
-
-init_TCP = np.array(Get_initTCPpos())
-# HOME_POSE = init_TCP     #  Safe inital home pose
-# HOME_POSE = np.array([-0.35857264, -0.07759438, 0.23013212, -3.04344862, -0.60611295, -0.16027859])  ## snapopen
-HOME_POSE = np.array([-0.50922925, -0.12718483,  0.01599379,  2.96554952,  0.67491036,  0.05593863])  ##open new box
-
-logger.info(f"Safe initial TCP: {HOME_POSE}")
-MAX_STEPS = 100
-
-# ── environment ─────────────────────────────────────────────────────────
-# task_name = "snapfit"
-# raw_env = SnapFitRobotEnv(rtde_c, rtde_r, home_pose=HOME_POSE, max_steps=100, verbose=False, offline_mode = False, device=device_name)
-
-task_name = "openbox"
-raw_env = OpenBoxRobotEnv(rtde_c, rtde_r, home_pose=HOME_POSE, max_steps=MAX_STEPS, verbose=False, offline_mode = False, device=device_name)
-
+gripper_ = RobotiqGripper(rtde_c) if task.requires_gripper else None
+MAX_STEPS = args.max_steps if args.max_steps is not None else task.max_steps
+task_name = args.task
+raw_env = create_robot_env(
+    task, rtde_c, rtde_r, gripper=gripper_, device=device_name,
+    home_pose=args.home_pose, max_steps=MAX_STEPS,
+)
+logger.info(f"Task: {task_name}, home pose: {raw_env.home}")
 
 env = wrap_env(raw_env)
 device = env.device
@@ -311,10 +303,7 @@ if args.base_policy_type == "checkpoint":
     expert_memory = None
 else:
     models_ref = {}
-    with open(args.demo_file, "r", encoding="utf-8") as demo_stream:
-        demo_length = max(sum(1 for _ in demo_stream) - 1, 0)
-    if demo_length == 0:
-        parser.error(f"one-demo CSV contains no transitions: {args.demo_file}")
+    demo_length = demo_rows
     expert_memory = RandomMemory(
         memory_size=demo_length,
         num_envs=1,

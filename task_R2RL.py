@@ -1,8 +1,8 @@
-"""Train OSRL or evaluate a trained policy checkpoint on the robot.
+"""Train R²RL or evaluate a trained policy checkpoint on the robot.
 
 Evaluation uses the stochastic policy mean by default::
 
-    python task_OSRL.py --eval --checkpoint path/to/agent_5000.pt
+    python task_R2RL.py --eval --checkpoint path/to/agent_5000.pt
 
 Pass ``--stochastic-evaluation`` only when sampled evaluation is intentional.
 """
@@ -18,8 +18,6 @@ import time
 
 # import the skrl components to build the RL system
 from skrl import logger
-from skrl.agents.torch.td3 import TD3, TD3_CFG
-from skrl.envs.loaders.torch import load_isaaclab_env
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.models.torch import DeterministicMixin, Model
@@ -31,10 +29,7 @@ from skrl.utils import set_seed
 
 # import new rl agents
 from algorithms.OneShot.osrl import OSRL, OSRL_CFG
-from envs.snapfit_env import SnapFitRobotEnv  
-from envs.open_box import OpenBoxRobotEnv
-from envs.assembly import AssemblyRobotEnv
-from envs.peginhole import PegInHoleRobotEnv
+from task_settings import TASKS, add_task_arguments, resolve_demo, validate_demo, create_robot_env
 from models.gaussian import GaussianMixin
 
 # import ur interface
@@ -44,11 +39,13 @@ from robotiq.robotiq_gripper_control import RobotiqGripper
 
 # Set this directly to a trained OSRL ``agent_*.pt`` checkpoint, or override
 # it with ``--checkpoint`` on the command line.
-OSRL_CHECKPOINT_PATH = "./runs/torch/snapfit/osrl/OSRL_new/checkpoints/best_agent.pt"
+DEFAULT_TASK = "snapfit"
+OSRL_CHECKPOINT_PATH = None
 EVALUATION_EPISODES = 30
 
 # parse arguments
 parser = argparse.ArgumentParser()
+add_task_arguments(parser, default_task=DEFAULT_TASK)
 parser.add_argument(
     "--checkpoint",
     type=str,
@@ -79,6 +76,17 @@ if args.eval and not args.checkpoint:
     parser.error("Set OSRL_CHECKPOINT_PATH or pass --checkpoint when using --eval")
 if args.eval_episodes < 1:
     parser.error("--eval-episodes must be at least 1")
+
+task = TASKS[args.task]
+if args.max_steps is not None and args.max_steps < 1:
+    parser.error("--max-steps must be positive")
+demo_file = resolve_demo(task, args.demo_file)
+demo_rows = 0
+if not args.eval:
+    try:
+        demo_rows = validate_demo(demo_file, task)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
 
 set_seed(42)
 
@@ -239,51 +247,21 @@ class BCmodel(DeterministicMixin, Model):
         return self.net(inputs["observations"]), {}
 
 
-# ── helper ──────────────────────────────────────────────────────────
-def Get_initTCPpos():
-    Init_TCP = rtde_r.getActualTCPPose()
-    return Init_TCP
-
-# ── robot connection ──────────────────────────────────────────────────────────
-ROBOT_IP  = "192.168.1.11"
+# Connect only after task, demonstration, and checkpoint validation.
+ROBOT_IP = args.robot_ip
 rtde_c = RTDEControlInterface(ROBOT_IP)
 rtde_r = RTDEReceiveInterface(ROBOT_IP)
 rtde_c.zeroFtSensor()
-
-gripper_ = RobotiqGripper(rtde_c)
-
-init_TCP = np.array(Get_initTCPpos())
-# HOME_POSE = init_TCP     #  Safe inital home pose # -0.002
-# HOME_POSE = np.array([-0.38633344, -0.22858439,  0.10802976, -3.06064544, -0.6274192,  0.03773944])  ## PeginHole init pos
-# HOME_POSE = np.array([-0.39687852,  0.01385717,  0.14660621,  0.99239598,  1.41831132, -0.89998169])  ## assemble init pos 2
-
-HOME_POSE = np.array([-0.35837264, -0.07759438, 0.23013212, -3.04344862, -0.60611295, -0.16027859])
-
-# HOME_POSE = np.array([-0.4982482,  -0.11075026,  0.08202713, -3.04956999, -0.68303232, -0.11320668])  ##open new box
-# HOME_POSE = np.array([-0.48796237, -0.17673211,  0.01922106,  2.96961517,  0.5870512,   0.05120328])  ##open box v0
-
-# HOME_POSE = np.array([-0.42646054,  0.10034163,  0.18232037,  3.05363488,  0.61486366,  0.00385519])  ##snapfit2 disasemble
-# HOME_POSE = np.array([-4.52200962e-01,  1.59801267e-01,  2.25089998e-01,  2.99534608e+00,  6.31839988e-01, -1.64644767e-03])  ##snapfit2 disasemble
-# HOME_POSE = np.array([-0.44172542,  0.1301668,   0.22782574,  3.01452808,  0.6134789,   0.05645406])  ## disasemble snapfit1
-print("Safe initial TCP:", HOME_POSE)
+gripper_ = RobotiqGripper(rtde_c) if task.requires_gripper else None
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
-MAX_STEPS = 100
-
-# # ── build env ────────────────────────────────────────────────────────────────
-task_name = "snapfit"
-raw_env = SnapFitRobotEnv(rtde_c, rtde_r, home_pose=HOME_POSE, max_steps=100, verbose=False, offline_mode = False, device=DEVICE)
-
-# task_name = "openbox_v0"
-# raw_env = OpenBoxRobotEnv(rtde_c, rtde_r, home_pose=HOME_POSE, max_steps=MAX_STEPS, verbose=False, offline_mode = False, device=DEVICE)
-
-# task_name = "peginhole"
-# raw_env = PegInHoleRobotEnv(rtde_c, rtde_r, gripper=gripper_, home_pose=HOME_POSE, max_steps=100, verbose=False, offline_mode = False, device=DEVICE)
-
-# task_name = "assembly"
-# raw_env = AssemblyRobotEnv(rtde_c, rtde_r, gripper=gripper_, home_pose=HOME_POSE, max_steps=100, verbose=False, offline_mode = False, device=DEVICE)
-
-
-demo_length = 100
+MAX_STEPS = args.max_steps if args.max_steps is not None else task.max_steps
+task_name = args.task
+raw_env = create_robot_env(
+    task, rtde_c, rtde_r, gripper=gripper_, device=DEVICE,
+    home_pose=args.home_pose, max_steps=MAX_STEPS,
+)
+logger.info(f"Task: {task_name}, home pose: {raw_env.home}")
+demo_length = MAX_STEPS
 env     = wrap_env(raw_env)                         # skrl wrapper
 device  = env.device
 
@@ -297,7 +275,7 @@ memory = None if args.eval else RandomMemory(memory_size=MAX_STEPS*100, num_envs
 expert_memory = (
     None
     if args.eval
-    else RandomMemory(memory_size=demo_length*1, num_envs=1, device=device)
+    else RandomMemory(memory_size=demo_rows, num_envs=1, device=device)
 )
 
 
@@ -359,12 +337,7 @@ cfg.select_act = True   # Flag to enable IBRL style data incorparation, set Fals
 cfg.deterministic_policy = False
 cfg.learn_entropy = False
 cfg.initial_entropy_value = 0.1
-# cfg.demo_file = "./demos/Peginhole/assembly.csv"
-# cfg.demo_file = "./demos/Peginhole/10demos.csv"
-
-# cfg.demo_file = "./demos/snapfit0/10demos.csv"
-cfg.demo_file = "./demos/snapfit0/snapfit_fixscale.csv"
-# cfg.demo_file = "./demos/snapfit0/one_demo_downsample_dn1.csv"    ## Use only one demonstration for training
+cfg.demo_file = str(demo_file) if demo_file is not None else ""
 cfg.Deep_Ensemble = deep_ensemble
 cfg.Ensemble_size = ensemble_size
 cfg.select_method = "on_state"  # select from "iql_v","off_state","adv" or else (IQL-style expectile regression), "bellman" (standard Bellman update), "cql" (CQL-style conservative update)

@@ -14,7 +14,6 @@ class AssemblyRobotEnv(gym.Env):
     Actions      : 6-dim   (delta-pose in original scale, clipped)
     """
 
-    metadata = {"render_modes": []}
     # # ── Task config ───────────────────────────────────────
     # # ── action bounds found in in the demo ───────────────────────────────────────
     # ACTION_MIN = np.array([-0.00080266, -0.00042364, -0.00046984,
@@ -31,7 +30,7 @@ class AssemblyRobotEnv(gym.Env):
     MOVE_ACCEL    = 0.3        # [m/s²]
     
 
-    def __init__(self, rtde_c, rtde_r, gripper, home_pose: np.array, max_steps: int = 150, verbose: bool = False, offline_mode = True, device = 'cpu'):
+    def __init__(self, rtde_c, rtde_r, gripper, home_pose: np.array, max_steps: int = 150, verbose: bool = False, offline_mode = True, device = 'cpu', demo_file=None):
         super().__init__()
         self.rtde_c   = rtde_c
         self.rtde_r   = rtde_r
@@ -81,17 +80,17 @@ class AssemblyRobotEnv(gym.Env):
             high= np.ones(6, dtype=np.float32),
         )
 
-        df = pd.read_csv("demos/Peginhole/assembly.csv")
+        # Recorded observations are only needed in replay-observation mode.
+        if self._offline_mode:
+            from task_settings import TASKS
 
-        # ── Extract observations (12 dims) and actions (6 dims) ───────────────────────
-        obs_cols    = [f"observations.{i}" for i in range(18)]
-        action_cols = [f"actions.{i}" for i in range(6)]
-        gripper_cols = [f"actions.6"]  # Assuming gripper action is the 7th column
+            demo_path = demo_file if demo_file is not None else TASKS["assembly"].demo_file
+            if demo_path is None:
+                raise ValueError("No recorded observations configured; provide demo_file")
+            df = pd.read_csv(demo_path)
+            obs_cols = [f"observations.{i}" for i in range(18)]
+            self._observations = df[obs_cols].values.astype(np.float32)
 
-        self._observations = df[obs_cols].values.astype(np.float32)    # (5000, 12)
-        actions      = df[action_cols].values.astype(np.float32) # (5000, 6)
-        # self.gripper_state      = df[gripper_cols].values.astype(np.float32) # (5000, 1)
- 
     # ── helpers ───────────────────────────────────────────────────────────────
     def _denorm(self, action_norm: np.ndarray) -> np.ndarray:
         """Map [-1,1] → original delta-pose space."""
@@ -110,7 +109,7 @@ class AssemblyRobotEnv(gym.Env):
         if self._offline_mode:
             # offline setting
             # Load the gooddemo file
-            obs = self._observations[self._steps+500*0,:]
+            return self._observations[self._steps].copy()
         else:
             ## online setting
             curr_Force = self.rtde_r.getActualTCPForce()
@@ -295,7 +294,7 @@ class AssemblyRobotEnv(gym.Env):
         command = [-1*mouse_input[1]*st, -1*mouse_input[0]*st, -1*mouse_input[2]*st, -1*mouse_input[3]*sr, mouse_input[4]*sr, mouse_input[5]*sr]
 
 
-        # Frame for base->tcp
+        # Frame for tcp->base
         T_tcp_in_base = np.eye(4)
         T_tcp_in_base[:3, :3] = R.from_rotvec(tcp_pose[3:6]).as_matrix()
         T_tcp_in_base[:3, 3] = tcp_pose[:3]
@@ -354,28 +353,8 @@ class AssemblyRobotEnv(gym.Env):
 
         # ───────────────────────────────────────────────────────────────────────────── Send TCP policy to UR
         # # ─ calculate sent TCP pose
-        # # Frame for base->tcp
+        # # Frame for tcp->base
         new_tcp_pose = self.command_in_tcp_frame(TCP_policy)  ## for servo
-
-
-        # curr_TCP = np.array(self.rtde_r.getActualTCPPose(), dtype=np.float64)
-        # T_tcp_in_base = np.eye(4)
-        # T_tcp_in_base[:3, :3] = R.from_rotvec(curr_TCP[3:6]).as_matrix()  ## tcp_pose is curtcp
-        # T_tcp_in_base[:3, 3] = curr_TCP[:3]
-
-        # # # # Create target transformation with policy output
-        # # T_delta = np.eye(4)
-        # # T_delta[:3, :3] = R.from_rotvec(TCP_policy[3:6]).as_matrix()
-        # # T_delta[:3, 3] = TCP_policy[:3]
-
-        # # T_target_in_base = T_tcp_in_base @ T_delta
-
-        # # # Extract new position and orientation
-        # # new_position = T_target_in_base[:3, 3]
-        # # new_orientation = R.from_matrix(T_target_in_base[:3, :3]).as_rotvec()
-
-        # new_tcp_pose = TCP_policy + curr_TCP
-        # TCP_policy_vel = TCP_policy/0.02
 
         # ── apply delta to current TCP pose every 1000 steps ───────────────────────
         should_move = True
