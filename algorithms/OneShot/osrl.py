@@ -113,8 +113,7 @@ class OSRL(Agent):
         self._select_method = self.cfg.select_method
         self._policy_method = self.cfg.policy_method
         self._q_method = self.cfg.q_method
-        self._OPEX = self.cfg.OPEX
-        self._TTT = self.cfg.TTT
+        self._UAQ = self.cfg.UAQ
         self.Need_new_replay = False
         self.pre_train = False
         self.bc_ = 0.0
@@ -391,29 +390,6 @@ class OSRL(Agent):
         self._cached_exp_actions = sampled_exp_actions.detach().clone()
 
 
-    def opex_explore(self, inputs, action):
-        action = action.clone().detach().requires_grad_(True)
-
-        with torch.enable_grad():
-            _, q, q_std = self._ensemble_q(inputs, action)
-
-            grad = torch.autograd.grad(
-                outputs=q.sum(),
-                inputs=action,
-            )[0]
-
-        beta = self.cfg.opex_beta
-        if torch.mean(q_std).item() > 1:
-            beta = 0.0
-        exploration = beta * grad
-        # print("grad", grad) 
-
-        self.track_data("Exploration / OPEX exploration (mean)", torch.mean(exploration).item())
-        self.track_data("Exploration / OPEX q (mean)", torch.mean(q).item())
-        self.track_data("Exploration / OPEX q std (mean)", torch.mean(q_std).item())
-
-        return exploration.detach(), q_std.detach()
-
     def _select_act(self, obs: torch.Tensor,
         exp_obs: torch.Tensor,
         rl_actions: torch.Tensor,
@@ -499,7 +475,7 @@ class OSRL(Agent):
             #     q_pi_exp_rel = q_pi_exp * torch.exp(-q_std_pi_exp)
             q_pi_rel = q_pi 
             q_pi_exp_rel = q_pi_exp 
-            # if self.cfg.TTT:
+            # if self.cfg.UAQ:
             #     with torch.no_grad():
             #         state_tune = BC_dist.abs().mean().detach()
             #         # BC_log_prob = self.policy.evaluate(exp_inputs, replay_actions)
@@ -652,11 +628,7 @@ class OSRL(Agent):
                 self.track_data("Policy / std (mean)", log_std.exp().mean().item())
 
             if self.cfg.deterministic_policy:
-                if self._OPEX:
-                    exploration, q_std = self.opex_explore(inputs, actions)
-                    actions = actions + exploration
-                    actions.clamp_(min=self.clip_actions_min, max=self.clip_actions_max)
-                elif self._exploration_noise:
+                if self._exploration_noise:
                     noises = self._exploration_noise.sample(actions.shape)
                     if self.cfg.exploration_scheduler:
                         noises.mul_(self.cfg.exploration_scheduler(timestep, timesteps))
@@ -913,7 +885,7 @@ class OSRL(Agent):
             q_mean, _ = q_stack.min(dim=0)                # (B, 1)  conservative estimate
 
         ## new*******************## new*******************
-        if self.cfg.TTT:
+        if self.cfg.UAQ:
             if policy_extraction:
                 with torch.no_grad():
                     BC_log_prob = self.policy.evaluate(inputs, actions)
@@ -1022,13 +994,6 @@ class OSRL(Agent):
                 # compute taegrt value based on value function estimation on sampled next states (baseline value).
                 with torch.no_grad():
                     if self._q_method == "iql":
-                        if self.cfg.OPEX:
-                            # Random actions (uniform coverage of action space)
-                            rand_actions, _ = self.policy.random_act(inputs, role="policy")
-                            # Current policy on current observations
-                            cur_actions, _ = self.policy.act(inputs, role="policy")
-                            next_actions, next_outputs = self.policy.act(next_inputs, role="target_policy")
-
                         # v_next, select_rl = self._select_rl(sampled_next_observations, sampled_exp_next_observations, sampled_exp_actions)
                         v_next, _ = self.value.act(next_inputs, role="value")   # V(s')
                         q_backup  = sampled_rewards + self.cfg.discount_factor * (sampled_terminated | sampled_truncated).logical_not() * v_next
@@ -1098,31 +1063,6 @@ class OSRL(Agent):
                     q_values_list.append(q_i)
                     if self._q_method == "iql":
                         critic_loss = critic_loss + F.mse_loss(q_i, q_backup)
-                        if self.cfg.OPEX:
-                            with torch.no_grad():
-                                BC_log_prob = self.policy.evaluate(inputs, sampled_actions)
-                                # BC_log_prob = self.policy.evaluate(exp_inputs, sampled_exp_actions)
-                                bc_ = max(-BC_log_prob.mean().detach().item(), 0.0)
-                            # ── OOD Q-values for logsumexp penalty ──────────────────────────
-                            q_rand, _    = critic.act({**inputs, "taken_actions": rand_actions},  role=f"critic_{i+1}")
-                            q_cur,  _    = critic.act({**inputs, "taken_actions": cur_actions},   role=f"critic_{i+1}")
-                            q_next, _    = critic.act({**inputs, "taken_actions": next_actions},   role=f"critic_{i+1}")
-
-                            # cat shape: (B, 3) — rand | cur-policy | next-policy
-                            cat_q = torch.cat([q_rand, q_cur, q_next], dim=1)
-                            n_actions = cat_q.shape[1]
-
-                            # ── CQL conservative penalty ────────────────────────────────────
-                            cql_logsumexp = (
-                                torch.logsumexp(cat_q / self.cfg.cql_temperature, dim=1)
-                                - math.log(n_actions)
-                            )
-
-                            cql_loss = (
-                                self.cfg.cql_alpha * self.cfg.cql_temperature * cql_logsumexp.mean()
-                                - self.cfg.cql_alpha * q_i.mean()
-                            )                            
-                            critic_loss = critic_loss + bc_*cql_loss
                     elif self._q_method == "cql":
                         # ── OOD Q-values for logsumexp penalty ──────────────────────────
                         q_rand, _    = critic.act({**inputs, "taken_actions": rand_actions},  role=f"critic_{i+1}")
@@ -1247,7 +1187,7 @@ class OSRL(Agent):
                             # Evaluate log-prob of dataset actions under current policy
                             log_prob = self.policy.evaluate(inputs, sampled_actions)
                             actions, outputs = self.policy.act(inputs, role="policy")
-                            if self.cfg.TTT:
+                            if self.cfg.UAQ:
                                 _, q_pi, q_std_pi = self._ensemble_q(inputs, actions, policy_extraction=True)
                             log_prob_pi = outputs["log_prob"]
                             entropy_loss = log_prob_pi.mean()          # minimizing this = maximizing entropy(randomness) of policy actions

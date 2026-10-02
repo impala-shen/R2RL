@@ -1,6 +1,7 @@
 # Replay and Reinforce RL (R²RL)
 
-Real-world RL for UR robot manipulation, built with **PyTorch**, **skrl**, **Gymnasium**, and **UR RTDE**.
+Implementation code for R²RL.
+Real-world RL initlized with one demonstration with UR robot for contect-rich manipulation, built with **PyTorch**, **skrl**, **Gymnasium**.
 
 ## Components and roles
 
@@ -16,7 +17,7 @@ Real-world RL for UR robot manipulation, built with **PyTorch**, **skrl**, **Gym
 | skrl `SequentialTrainer` | Coordinate environment interaction and agent updates |
 | UR RTDE | Send commands and read measurements; the UR controller executes motion |
 
-Other entry points are `task_IBRL.py` (imitation-guided RL), `task_ResidualRL.py` (base controller plus learned corrections), and `task_BC_noenv.py` (unfinished offline BC). `OfflineTrainer.py` runs updates without robot rollouts.
+Other entry points are `task_IBRL.py` (imitation-bootstrapped RL), `task_ResidualRL.py` (replay policy + learned corrections), and `task_BC_noenv.py` (unfinished offline BC). `OfflineTrainer.py` runs updates without robot rollouts.
 
 ## Environment setup
 

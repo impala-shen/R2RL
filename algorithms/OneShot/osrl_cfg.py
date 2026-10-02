@@ -173,8 +173,8 @@ class OSRL_CFG(AgentCfg):
     uncertainty_epsilon: float = 0.
     """Small value added to the standard deviation of the critics' predictions to prevent division by zero during OPEX exploration."""
 
-    TTT: bool = False
-    """Whether to use Test-time training for exploration."""
+    UAQ: bool = False
+    """Whether to use Uncertainty-aware Q-gating for exploration."""
 
     Ensemble_size: int = 2
     """Number of critics in the ensemble."""
